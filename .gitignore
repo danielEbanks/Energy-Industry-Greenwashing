@@ -137,6 +137,13 @@ version0_20/syn*
 Data/
 Dataset/
 Papers/
+Dataset_2021/
+plots/
+tables/
+Pres*
+SM*
+desktop.ini
+topwords.csv
 Nov*
 green*
 Exp*
