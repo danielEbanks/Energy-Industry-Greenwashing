@@ -1,0 +1,1605 @@
+
+rm(list=ls())
+
+## Load  in library
+library(dplyr)
+library(tidytext)
+library(quanteda)
+library(lubridate)
+library(text2vec)
+library(parallel)
+library(ggplot2)
+library(rJST)
+library(data.table)
+library(vars)
+library(vegan)
+library(ggforce)
+library(factoextra)
+library(ggpmisc)
+library(tidyr)
+
+setwd("/home/debanks/Dropbox/congress_centrality/code/")
+source("IRF_flexible_shock.R")
+
+textData <- read.csv("TwitterSpeech.csv")
+textData <- textData[!duplicated(textData$doc_id),]
+
+# create a week
+textData$date <- as.POSIXct(
+  paste0(textData$year,"-",textData$month,"-",textData$day),
+  format="%Y-%b-%e")
+textData$week   <- isoweek(textData$date)
+
+## prepare JST model
+attach(textData)
+llDisplay <- data.frame(doc_id = paste(doc_id),text = paste(tweet),week=week,handle=handle,month=month,day=day,year=year,party=party,state=state,stringsAsFactors = F)
+detach(textData)
+
+stop_words_custom = c("this","discuss","community","learn","congressional","amendment","speaker","say","said","talk","congrats","pelosi","gop","congratulations","are","as","i", "me", "my", "myself", "we", "our", "ours", "ourselves", "you", "your", "yours","he","her","him","she","hers","that","be","with","their","they're","is","was","been","not","they","it","have","will","has","by","for","madam","Speaker","Mister","Gentleman","Gentlewoman","lady","voinovich","kayla","111th","115th","114th","rodgers",         "clerk" ,    "honor" ,   "address"   ,     
+                      "house" , "start"   ,"amend","bipartisan","bill",   "114th"    ,   "congress"  ,     
+                      "one",   "thing"    ,   "learned"    ,   "legislator","things" ,"things","can't","can","cant","will","go","going","let","lets","let's","say","says","know","talk","talked","talks","lady","honorable","dont","think","said","something","something","wont","people","make","want","went","goes","congressmen","people","person","like","come","from","need","us",paste(textData$firstname),paste(tidytext::stop_words$word),stopwords())
+# Create tokens for the words you keep
+toks1 <- tokens(corpus(llDisplay), remove_punct = TRUE)
+toks2 <- tokens_remove(toks1, stop_words_custom)
+toks3 <- tokens_ngrams(toks2, 1:3)
+toks3 <- tokens_wordstem(toks3)
+#toks3 <- tokens_keep(toks3,dfm_speeches@Dimnames$features)
+
+
+N = nrow(llDisplay)
+
+# create a document feature matrix (quanteda style) to run JST
+dfm_speeches <- dfm(toks3 , 
+                    remove_punct = TRUE ,remove_numbers = TRUE,stem = T) %>% 
+  dfm_trim(min_termfreq = 25,min_docfreq =50,max_docfreq = 0.5*N)
+
+
+
+
+# select number of topics
+kk = c(5,10,15,20,25,28,30,40,50,60)
+print(Sys.time())
+results <- mclapply(kk,FUN = function(kk) jst(dfm_speeches,
+                                           paradigm(),
+                                           numTopics = kk,
+                                              numSentiLabs = 2,
+                                           excludeNeutral = T,
+       numIters = 1000),mc.cores = getOption("mc.cores", 10L))  
+print(Sys.time())
+
+save(results,file="modelOutput2senti-1000.RData")
+
+
+
+
+
+
+# select number of topics
+kk = c(5,10,15,20,25,28,30,40,50,60)
+print(Sys.time())
+results <- mclapply(kk,FUN = function(kk) jst(dfm_speeches,
+                                              paradigm(),
+                                              numTopics = kk,
+                                              numSentiLabs = 3,
+                                              numIters = 1000),mc.cores = getOption("mc.cores", 10L))  
+print(Sys.time())
+
+save(results,file="modelOutput3senti-1000.RData")
+
+
+load(file="modelOutput3senti-1000.RData")
+
+## Create a TCM to assess the models using coherence (requires text2vec style)
+
+
+# create dtm and tcm
+dtm = create_dtm(it, vectorizer)
+tcm = Matrix::crossprod(sign(dtm))
+
+# calculate coherence scores
+result_co <-sapply(seq(1:10),FUN=function(x) colMeans(coherence(as.matrix(top20words(results[[x]])), tcm, metrics = c("mean_logratio", "mean_pmi", "mean_npmi",
+                                                                                                                      "mean_difference", "mean_npmi_cosim", "mean_npmi_cosim2"),
+                                                                smooth = 1e-12, n_doc_tcm = N),na.rm=T))
+# extract parameters 
+
+
+
+
+
+## Look at aggregate positions
+
+bet_cors    <-list()
+clust_cors  <-list()
+main_cors   <-list()
+stress_list <-list()
+
+main_data_list   <- list()
+k_index  <- c(6)
+filter_n <- seq(0,70,10)
+n_senti=3
+for(ff in 1:length(filter_n)){
+  bet_cors[[ff]]        <- list()
+  clust_cors[[ff]]      <- list()
+  main_cors[[ff]]       <- list()
+  stress_list[[ff]]     <- list()
+  main_data_list[[ff]]  <- list()
+  
+  print(ff)
+#for(k in 1:length(results)){
+  for(k in k_index){
+
+# extract parameters 
+theta <- get_parameter(results[[k]],"theta")
+phi   <- get_parameter(results[[k]],"phi")
+pi    <- get_parameter(results[[k]],"pi")
+
+
+
+
+#  concatenate sentiment and topic probabilities into one dataframe
+theta$sent1 <- pi$sent1
+theta$sent2 <- pi$sent2
+if(n_senti>2){
+theta$sent3 <- pi$sent3
+}
+ theta<-theta %>% filter(!(handle %in%
+                            c( "@drnealdunnfl2", 
+                               "@repjenniffer", 
+                               "@sencortezmasto", 
+                               "@reproybalallard", 
+                               "@repchriscollins") ))
+theta$leader <- ifelse(theta$handle%in% c("@speakerpelosi",
+                                          "@gopleader",
+                                          "@replizcheney",
+                                          "@stevescalise",
+                                          "@leaderhoyer",
+                                          "@whipclyburn"),1,0)
+
+cutoff<- kk[k]
+theta_est<-theta
+theta_est[,9:(9+cutoff)] <- theta[,9:(8+cutoff)]*theta$sent1
+theta_est[,(9+cutoff):(8+2*cutoff)] <- theta[,(9+cutoff):(8+2*cutoff)]*theta$sent2
+theta_est[,(9+2*cutoff):(8+3*cutoff)] <- theta[,(9+2*cutoff):(8+3*cutoff)]*theta$sent2
+
+if(n_senti==3){
+columns = names(theta)[9:92]
+  PCA_vecs_agg    <- theta%>% 
+  group_by(party,leader,handle)%>% 
+  mutate(n_tweets = n()) %>%
+  filter(n_tweets>filter_n[ff]) %>% 
+  ungroup() %>%dplyr::select(leader,party,handle,topic1sent1:sent3) %>% 
+  group_by(party,leader,handle)%>%
+  summarise_all(list(mean))
+}
+
+if(n_senti==2){
+  PCA_vecs_agg    <- theta%>% 
+    group_by(party,leader,handle)%>% 
+    mutate(n_tweets = n()) %>%
+    filter(n_tweets>filter_n[ff]) %>% 
+    ungroup() %>%dplyr::select(leader,party,handle,topic1sent1:sent2) %>% 
+    group_by(party,leader,handle)%>%
+    summarise_all(list(mean))
+}
+
+
+PCA_vecs_agg$n_tweets <- NULL 
+
+#compute hellinger distance 
+
+
+if(n_senti==3){
+pca_mat <- as.matrix(PCA_vecs_agg%>%ungroup %>%dplyr::select(topic1sent1:sent3))
+pca_mat <- (pca_mat[,1:(ncol(pca_mat)-n_senti)])
+}
+
+if(n_senti==2){
+  pca_mat <- as.matrix(PCA_vecs_agg%>%ungroup %>%dplyr::select(topic1sent1:sent2))
+  pca_mat <- (pca_mat[,1:(ncol(pca_mat))])
+}
+
+fit6  <-prcomp(pca_mat) 
+
+
+
+
+
+res.var <- get_pca_var(fit6)
+ind.var <- get_pca_ind(fit6)
+pc1 <- ind.var$coord[,1]
+pc2 <- ind.var$coord[,2]
+
+PCA_vecs_agg$dim1 <- pc1
+PCA_vecs_agg$dim2 <- pc2
+
+#stress_list[[ff]][[k]] <-fit4$copstress
+
+PCA_vecs_agg %>% group_by(party)%>%filter(abs(dim2)<=0.3) %>% summarise(n(),mean(dim1),
+                                                                        mean(dim2),sd(dim1),sd(dim2))%>%filter('n()'>filter_n[ff])
+g <- ggplot( PCA_vecs_agg%>%filter(abs(dim2)<=0.3),aes(dim1,dim2,colour=party))+
+  geom_point(aes(size=as.factor(leader))) + 
+  scale_size_manual(values=c(2,5))+theme_bw()+scale_color_manual(values=c("#2E74C0", "#CB454A"))+
+  ggtitle("Aggregate Message Positions-PCA")+
+  labs(size="Leadership",colour="Party")
+plot(g)
+pdf(file=paste0("../plots/MDS_total_mespos_agg_",k,".pdf"))
+plot(g)
+dev.off()
+
+
+##### Try procrustes
+
+# compute sammon MDS embeddings for each legislator for each week
+
+theta$week <- ifelse(theta$year==2020,theta$week+max(theta$week),theta$week)
+weekIndex <- seq(from=8,to=max(theta$week),by=1)
+vecsList  <- list() 
+
+for(ww in weekIndex){
+  ii <- ww-7
+  print(ii)
+  PCA_vecs    <- theta%>%filter(week>=ii&week<=ww) %>% 
+    mutate(mem_max=  do.call(pmax, c(dplyr::select(.,topic1sent1:topic28sent3), na.rm = TRUE))) %>%
+    # only keep people with 50 tweets, otherwise, not enough data on them to estimate a position (given 2 sentiments and 20 topics, leaves 10 degrees of freedom)
+    group_by(party,leader,handle)%>% mutate(n_tweets = n())%>% 
+    filter(n_tweets>filter_n[ff]) %>%
+    ungroup() %>%
+    dplyr::select(leader,party,mem_max,handle,n_tweets,topic1sent1:sent3) %>% 
+    group_by(party,leader,handle)%>%
+    summarise_all(list(mean))
+  
+  
+  #PCA_vecs$n_tweets <- NULL 
+  PCA_vecs$week <- ww  
+  
+
+  
+  
+  vecsList[[ii]] <- PCA_vecs
+  
+}
+
+PCA_vecs <-rbindlist(vecsList)
+PCA_vecs <- PCA_vecs%>% mutate(dim1_rot=NA,dim2_rot=NA)
+
+pca_mat <- as.matrix(PCA_vecs%>%
+                       ungroup() %>%
+                       dplyr::select(topic1sent1:sent3)
+                       )
+                        
+pca_mat <- (pca_mat[,1:(ncol(pca_mat)-n_senti)])
+fit_week  <-prcomp(pca_mat) 
+
+
+res.var <- get_pca_var(fit_week)
+ind.var <- get_pca_ind(fit_week)
+pc1 <- ind.var$coord[,1]
+pc2 <- ind.var$coord[,2]
+
+
+PCA_vecs$dim1_init <- pc1
+PCA_vecs$dim2_init <- pc2
+PCA_rot_list <- list()
+count_i =1
+for(ww in unique(PCA_vecs$week) ){
+  
+  PCA_rot <- PCA_vecs%>% 
+    filter(week==ww) %>%
+    dplyr::select(handle,
+                  week,
+                  party,
+                  leader,
+                  n_tweets,
+                  mem_max,
+                  dim1_init,
+                  dim2_init) %>%
+    left_join(PCA_vecs_agg%>%
+                ungroup() %>%
+                dplyr::select(handle,
+                              dim1,
+                              dim2),
+              by="handle") 
+  
+  
+corrected<-  procrustes(as.matrix(PCA_rot%>%
+                         dplyr::select(dim1,dim2)),
+             as.matrix(PCA_rot%>%
+                         dplyr::select(dim1_init,dim2_init)),
+             scale = F
+             )
+
+
+PCA_rot <- PCA_rot%>%
+         mutate(dim1_rot = corrected$Yrot[,1],
+                dim2_rot = corrected$Yrot[,2])
+
+PCA_rot_list[[count_i]] <-  PCA_rot
+count_i=count_i+1
+}
+
+
+PCA_rot <-rbindlist(PCA_rot_list)
+
+#for(ww in unique(PCA_rot$week)){
+
+g <-ggplot( PCA_rot%>%
+              filter(week==ww),
+            aes(dim1_rot,
+                dim2_rot,
+                colour=party))+
+    geom_point(aes(size=as.factor(leader))) +
+    scale_size_manual(values=c(2,5))+
+  theme_bw()+scale_color_manual(values=c("#2E74C0", "#CB454A"))+
+    ggtitle("Aggregate Message Positions-PCA")+
+    labs(size="Leadership",
+         colour="Party")
+  pdf(file=paste0("../plots/MDS_total_PCA_proc_",ww,".pdf"))
+  plot(g)
+  dev.off()
+  plot(g)
+
+#   
+# }
+
+
+
+PCA_vecs_week<- PCA_rot %>% group_by(week,party) %>% mutate(mean_pos1 = mean(dim1_rot),
+                                                                mean_pos2 = mean(dim2_rot),
+                                                                median_pos1 =median(dim1_rot),
+                                                                median_pos2 =median(dim2_rot),
+                                                                var_pos1 = var(dim1_rot),
+                                                                var_pos2 = var(dim2_rot),
+                                                                n_members = n(),
+                                                                n_tweets = sum(n_tweets),
+                                                                mean_conc =mean(mem_max))%>%
+  group_by(week,party,leader) %>%
+  mutate(leader_mean_pos2 = mean(dim2_rot),
+         leader_median_pos2 =median(dim2_rot)) %>% 
+  dplyr::select(week,party,leader,n_tweets,n_members,mean_conc,var_pos2,leader_mean_pos2,leader_median_pos2,mean_pos2,median_pos2)%>%
+  distinct() %>%
+  tidyr::pivot_wider(id_cols = c("week","party","n_tweets","var_pos2","mean_conc","mean_pos2","n_members"),leader,values_from=leader_mean_pos2)%>%
+  ungroup()%>%
+ # mutate(barrier=(n_tweets/n_members)*(mean_conc+var_pos2/abs(`1`-mean_pos2)))  
+  mutate(barrier=(n_tweets/n_members)*(mean_conc+var_pos2+abs(`1`-mean_pos2))) 
+
+
+DemNetsStats <- readr::read_csv("DemNetsStatstest.csv")
+RepNetsStats <- readr::read_csv("RepNetsStatstest.csv")
+
+DemNetsStatsB <- readr::read_csv("DemNetsStatsBet.csv")
+RepNetsStatsB <- readr::read_csv("RepNetsStatsBet.csv")
+
+level=3
+
+DemNetsStats  <-  DemNetsStats %>% mutate(party="d",week=as.numeric(week_index)) %>% 
+  filter(leader_count==level)
+DemNetsStatsB <- DemNetsStatsB %>% 
+  mutate(party="d",week=as.numeric(week_index),year=as.numeric(year_index)) %>% 
+  filter(leader_count==level) %>%
+  dplyr::select(party,week,Betweeness:year)
+DemNetsStats <- DemNetsStats %>% 
+  left_join(DemNetsStatsB,by=c("party","week","week_index","year","leader_count"))
+
+RepNetsStats <- RepNetsStats %>% mutate(party="r",week=as.numeric(week_index)) %>% 
+  filter(leader_count==level)
+RepNetsStatsB <- RepNetsStatsB %>% 
+  mutate(party="r",week=as.numeric(week_index),year=as.numeric(year_index)) %>% 
+  filter(leader_count==level) %>%
+  dplyr::select(party,week,Betweeness:year)
+RepNetsStats <- RepNetsStats %>% 
+  left_join(RepNetsStatsB,by=c("party","week","week_index","year","leader_count"))
+
+NetsStates <- rbind(DemNetsStats,RepNetsStats)
+NetsStates$week <-ifelse(NetsStates$year==2020, max(NetsStates$week)+NetsStates$week,NetsStates$week)
+## align weeks 
+
+NetsStates<-  NetsStates %>% left_join(PCA_vecs_week,by=c("week","party"))
+
+main_cors[[ff]][[k]] <-NetsStates %>%group_by(party) %>% na.omit(var_pos2) %>%
+  summarise(cor(InCloseness,barrier),
+            cor(InDegree,barrier),
+            cor(Weighted1InCloseness,barrier) ,
+            cor(Pagerank,barrier),
+            cor(TotalInDegree,barrier))
+
+clust_cors[[ff]][[k]]<- NetsStates %>%group_by(party) %>% na.omit(barrier) %>%
+  summarise(cor(AvgClustering,barrier),cor(LocalEfficiency,barrier),cor(GlobalEfficiency,barrier))
+
+
+bet_cors[[ff]][[k]]<- NetsStates %>%group_by(party) %>%na.omit(barrier) %>%
+  summarise(cor(Weighted1Betweeness,barrier),cor(Weighted2Betweeness,barrier),
+            cor(Weighted3Betweeness,barrier),cor(Betweeness,barrier))
+
+# print(NetsStates %>%group_by(party) %>%na.omit(barrier) %>%
+#   summarise(cor(Weighted1Betweeness,abs(mean_pos2)),cor(Weighted2Betweeness,abs(mean_pos2)),
+#             cor(Weighted3Betweeness,abs(mean_pos2)),cor(Betweeness,abs(mean_pos2))))
+# 
+# print(NetsStates %>%group_by(party) %>%na.omit(barrier) %>%
+#         summarise(cor(Weighted1Betweeness,abs(median_pos2)),cor(Weighted2Betweeness,abs(median_pos2)),
+#                   cor(Weighted3Betweeness,abs(median_pos2)),cor(Betweeness,abs(median_pos2))))
+
+print(main_cors[[ff]][[k]])
+print(clust_cors[[ff]][[k]])
+print(bet_cors[[ff]][[k]])
+
+main_data_list[[ff]][[k]] <-list(theta=theta,theta_est=theta_est,phi=phi,pi=pi,PCA_vecs=PCA_vecs,PCA_vecs_agg=PCA_vecs_agg,PCA_vecs_week=PCA_vecs_week,
+                                 NetsStates=NetsStates,PCA_rot=PCA_rot)
+
+
+
+
+}
+}
+
+
+
+#ff=3,k=6
+ff=2
+k=6
+
+ff=3
+theta      <- main_data_list[[ff]][[k]]$theta 
+NetsStates <- main_data_list[[ff]][[k]]$NetsStates 
+
+
+
+main_data <- NetsStates %>%group_by(party)
+#%>%
+ # left_join(PCA_vecs_week,by=c("party","week"))
+
+
+pdf("/home/debanks/congress_centrality/plots/bar_ts.pdf")
+ggplot(data=main_data%>%mutate(party=recode(party,r="Republican",d="Democratic")),
+       aes(x=week,y=barrier,colour=as.factor(party))) +
+  geom_line()+theme_bw()+scale_color_manual(values=c("#2E74C0", "#CB454A"))+
+  xlab("Week")+ylab("Barrier to Coordination")+
+  labs(colour="Party")
+  
+dev.off()
+
+pdf("/home/debanks/congress_centrality/plots/cent_ts.pdf")
+ggplot(data=main_data%>%mutate(party=recode(party,r="Republican",d="Democratic")),
+       aes(x=week,y=Weighted2Betweeness,colour=as.factor(party))) +
+  geom_line()+theme_bw()+scale_color_manual(values=c("#2E74C0", "#CB454A"))+
+  xlab("Week")+ylab("Leadership Centrality")+
+  labs(colour="Party")
+dev.off()
+
+
+formula <- y~x
+
+df.plots <- main_data %>% 
+            dplyr::select(party,
+                         week,
+                         InCloseness,
+                         Betweeness,
+                         Weighted2Betweeness,
+                         Pagerank,
+                         var_pos2,
+                         barrier,
+                         n_members,
+                         mean_pos2) %>%
+            mutate(party=recode(party,d="Democratic",r="Republican")) %>%
+  filter(party=="Democratic")
+       
+
+
+
+file_names <- c("InCloseness","BT","Weighted2BT","Pageranks")
+
+
+for(i in 1:4){
+pdf(paste0("/home/debanks/congress_centrality/plots/",file_names[i],"_bar_d.pdf"))
+g <- ggplot(df.plots,aes(x=barrier,
+                         y=as.data.frame(df.plots[,(2+i)])[[1]]))+
+  scale_colour_manual("",values=c("blue"))+
+  geom_point(size=0.5,color="blue")+
+  geom_smooth(method='lm',formula = formula,fill="dodgerblue2")+
+  scale_fill_manual("",values=c("dodgerblue2"))+
+  stat_fit_tidy(method = 'lm',
+                method.args = list(formula = formula),
+                geom = 'text',
+                aes(label = paste("B~`=`~", 
+                                  signif(stat(x_estimate), 
+                                         digits = 3),
+                                  "%+-%",
+                                  signif(stat(x_se), 
+                                         digits = 2))),
+                label.x = "center", 
+                label.y  = 0.2, 
+                size = 3,face="bold", color="black",parse=T)+
+ # facet_wrap(~as.factor(party),scales = "fixed",ncol=2,shrink=F,)+
+  xlab("Barriers to Coordination")+
+  ylab("Leadership Influence\n(Network Centrality)") +
+  theme(axis.title.x =  element_text(size=8),
+        axis.text.x = element_text(angle=45,
+                                   hjust = 1), 
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        strip.background = element_rect(fill     = "white",
+                                        color    = "black",
+                                        linetype = "solid"),
+        panel.background = element_rect(fill     = "white",
+                                        color    = "black",
+                                        linetype = "solid"),
+        axis.line = element_line(colour = "black"),
+        panel.grid.minor = element_blank(),
+        )
+plot(g)
+dev.off()
+plot(g)
+}
+
+
+
+
+
+
+df.plots <- main_data %>% 
+  dplyr::select(party,
+                week,
+                InCloseness,
+                Betweeness,
+                Weighted2Betweeness,
+                Pagerank,
+                var_pos2,
+                barrier,
+                n_members,
+                mean_pos2) %>%
+  mutate(party=recode(party,d="Democratic",r="Republican")) %>%
+  filter(party=="Republican")
+
+
+
+
+for(i in 1:4){
+  pdf(paste0("/home/debanks/congress_centrality/plots/",file_names[i],"_bar_r.pdf"))
+  g <- ggplot(df.plots,aes(x=barrier,
+                           y=as.data.frame(df.plots[,(2+i)])[[1]]))+
+    scale_colour_manual("",values=c("red"))+
+    geom_point(size=0.5,color="red")+
+    geom_smooth(method='lm',formula = formula,fill="firebrick2",color="red")+
+    scale_fill_manual("",values=c("firebrick2"))+
+    stat_fit_tidy(method = 'lm',
+                  method.args = list(formula = formula),
+                  geom = 'text',
+                  aes(label = paste("B~`=`~", 
+                                    signif(stat(x_estimate), 
+                                           digits = 3),
+                                    "%+-%",
+                                    signif(stat(x_se), 
+                                           digits = 2))),
+                  label.x = "center", 
+                  label.y  = 0.2, 
+                  size = 3,face="bold", color="black",parse=T)+
+    # facet_wrap(~as.factor(party),scales = "fixed",ncol=2,shrink=F,)+
+    xlab("Barriers to Coordination")+
+    ylab("Leadership Influence\n(Network Centrality)") +
+    theme(axis.title.x =  element_text(size=8),
+          axis.text.x = element_text(angle=45,
+                                     hjust = 1), 
+          legend.position = "none",
+          panel.grid.major = element_blank(),
+          strip.background = element_rect(fill     = "white",
+                                          color    = "black",
+                                          linetype = "solid"),
+          panel.background = element_rect(fill     = "white",
+                                          color    = "black",
+                                          linetype = "solid"),
+          axis.line = element_line(colour = "black"),
+          panel.grid.minor = element_blank(),
+    )
+  plot(g)
+  dev.off()
+  plot(g)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+#################
+
+#extract topic names
+topicnames <- top20words(results[[6]])[1:5,]
+
+topicnames_parse <- c("Impeachment - Positive"          ,"Jobs and Economy-Negative","Mitch Mcconnel's Senate-Neutral",
+                      "Elevating Female Candidates - Positive"     ,"Public Health - Negative","Critical votes and legislation-Neutral",
+                      "Stay Home, Save  Lives-Positive","Federal Workers Persevere through Government Shutdown - Negative", "Tune in and Watch-Neutral",
+                      "Drug Costs - Positive"           ,"Student Loan Forgiveness and College-Negative","Celebration-Neutral",
+                      "Protect Voting Rights - Positive"         ,"Clean Environment and Public Health-Negative","Conservation and Energy-Neutral",
+                      "Law Enforcement and Police-Positive","Post-Attack Condolences-Negative","Families on SNAP-Neutral",
+                      "Emergency Border Wall Funding-Positive", "Sports Congratulations-Negative","Protect Social Security-Neutral",
+                      "Federal Grants  and Funding- Positive","Child Immigrants and Asuylum-Negative","STEM and Education Congratulations-Neutral",
+                      "Ukraine Scandal-Positive","Eulogizing a Public Figure or Friend-Negative","Cancer Research-Neutral",
+                      "Consumer Data Security Breach-Positive",  "Border Security and Illegal-Negative","Town Halls-Neutral",
+                      "Jobs, Unemployment, Economy-Positive ","Labor and Minimum Wage-Negative","National Security and Military -Neutral",
+                      "Mass Shootings-Positive", "Constituent Problems-Negative","Pro-Life Messages-Neutral",
+                      "Condemning White Nationalism-Positive","Investing in Rural Communities-Negative","Gun Policy -Neutral",
+                      "Annual Meetings-Positive",             "Combatting Climate Change-Negative","War Resolutions-Neutral",
+                      "Domestic-Sexual Violence-Positive",    "Enrolling in Healthcare-Negative","Presidential Power-Oath-Netural",
+                      "Veterans' Sacifices-Positive",         "MLK-Justice-Negative","Meeting Local Leaders-Neutral",
+                      "Speaking on the Floor-Positive",       "Constituent Service-Negative","Clean Energy/Gas-Neutral",
+                      "Discussing issues-Positive",           "Equality for Women and LGBTQ-Negative","Meetings and Discussion-Neutral",
+                      "VA services and access-Positive",      "Research Progress-Negative","Affordable health care-Neutral",
+                      "Trade Deals-USMCA-Positive",           "Trump Immigration Policies- Negative","Spanish Language-Neutral",
+                      "Iran Deal/Middle East-Positive",        "School Visits to Capitol-Negative","Tax Filing-Neutral",
+                      "Veteran Family Care-Positive",          "Letter and Task Forces-Negative","Introduce Legislation-Neutral",
+                      "President Trump Accused of Racism-Positive","Holidays-Negative","Bipartisan Legislation-Neutral",
+                      "Women's Reproductive Health/Abortion - Positive","Freedom and Sacrifice-Negative","Elementary Education-Neutral",
+                      "Government Shutdown-Positive","Job Oppurtunity-Negative","Mental Health and Drug Prevention-Neutral",
+                      "Women's Pay -Positive","Meuller Report-Negative","Presidential Power-Neutral",
+                      "Committee hearings-Positive","Gun Violence Victim Remembrence-Negative","Air and Coast Guard-Neutral",
+                      "Protect Health Care-Positive","Agricultural and Faming-Negative","Peurto Rico Disaster Relief-Neutral"
+                      
+)
+
+############
+## VAR
+
+  
+## VAR 
+DEM_vec <- theta %>% dplyr::filter(party=="d") %>%
+  mutate(leader=case_when(handle %in% c("@speakerpelosi","@leaderhoyer","@whipclyburn") ~1,
+                                    !(handle %in% c("@speakerpelosi","@leaderhoyer","@whipclyburn")) ~0))     
+
+DEM_vec_nonleader <-  DEM_vec %>% 
+  mutate(Date = as.Date(paste0(day,"-",month,"-",year ),format="%d-%b-%Y"))%>%
+  group_by(Date,leader) %>% 
+  filter(leader==0) %>%
+  summarise(dplyr::across(topic1sent1:sent3,mean)) %>% 
+  mutate(handle="Members") %>%
+  dplyr::select(Date, handle,topic1sent1:sent3)
+
+DEM_vec_leader <-  DEM_vec %>% mutate(Date = as.Date(paste0(day,"-",month,"-",year ),format="%d-%b-%Y"))%>%
+  group_by(Date,leader) %>% filter(leader==1) %>%
+  summarise(dplyr::across(topic1sent1:sent3,mean)) %>% 
+  mutate(handle="Leaders") %>%
+  dplyr::select(Date, handle,topic1sent1:sent3)
+
+DEM_vec_all <- rbind(DEM_vec_leader,DEM_vec_nonleader)
+
+DEM_vec_wide <- DEM_vec_all%>% ungroup()%>% dplyr::select(Date, handle,topic1sent1:sent3) %>%
+  pivot_wider(names_from=handle,values_from=c(topic1sent1:sent3)) 
+DEM_vec_wide <- DEM_vec_wide %>% na.omit()
+
+
+
+################################
+#initialize lists
+
+VAR_list <- list()
+
+irf_list_1 <-list()
+irf_list_0 <-list()
+
+idx=1
+index_i =1
+for(i in seq(2,(length(DEM_vec_wide)-1),by=2))   {
+  ts.mat <-ts(DEM_vec_wide[,i:(i+1)])
+  topic_number <- gsub("_(.*)","",colnames(ts.mat))[1]
+  topic_title  <- paste(topicnames[colnames(topicnames)==topic_number][1,1],
+                        topicnames[colnames(topicnames)==topic_number][2,1],
+                        topicnames[colnames(topicnames)==topic_number][3,1],
+                        topicnames[colnames(topicnames)==topic_number][4,1])
+  ts.mat <- log(ts.mat/(1-ts.mat))
+  sds <- c(sd(ts.mat[,1]),sd(ts.mat[,2]))
+  ts.rev <- ts(DEM_vec_wide[,c((i+1),i)])
+  ts.rev <- log(ts.rev/(1-ts.rev))
+  var_aic <- VAR(ts.mat, type = "none", lag.max = 7, ic = "AIC")
+  optimalP<-var_aic$p
+  if(!length(topic_title)==0){
+    #VAR_list[[idx]] <- vec2var(ca.jo(ts.mat,type="eigen", optimalP, ecdet = "trend",spec="transitory"),r=1)
+    print(topic_title)
+    
+    VAR_list[[idx]] <- VAR( ts.mat, optimalP, type = "const")
+    
+    
+    member_strings <- names(VAR_list[[idx]]$datamat)[2]
+    leader_strings <- names(VAR_list[[idx]]$datamat)[1]
+
+    var_irf_1 <- irf_corrected(VAR_list[[idx]] ,
+                               impulse = leader_strings, 
+                               response = member_strings,
+                               n.ahead=25,
+                               shock=1,
+                               runs = 200,
+                               ortho = T)
+    var_irf_0 <- irf_corrected(VAR_list[[idx]], 
+                               impulse = member_strings, 
+                               response =leader_strings,
+                               n.ahead = 25,
+                               shock = 1,
+                               runs = 200,
+                               ortho = T)
+    
+    plot(var_irf_1)
+    plot(var_irf_0)
+    print(optimalP)
+  #create dataset of topics where leaders lead that are not sentiments
+   if(var_irf_1$Lower[[1]][1] >-100) {
+
+  irf_list_1[[index_i]] <-   data.frame(Party="Democratic",
+                                        Lower=DeltaLOtoDeltaProb(var_irf_1$Lower[[1]],
+                                                                 impulse=(VAR_list[[1]]$datamat[,1]),
+                                                                 response=(VAR_list[[1]]$datamat[,2]),
+                                                                 delta=NULL)[,1],
+                                        Upper=DeltaLOtoDeltaProb(var_irf_1$Upper[[1]],
+                                                               impulse=(VAR_list[[1]]$datamat[,1]),
+                                                               response=(VAR_list[[1]]$datamat[,2]),
+                                                               delta=NULL)[,1],
+                                        IRF=DeltaLOtoDeltaProb(var_irf_1$irf[[1]],
+                                                               impulse=(VAR_list[[1]]$datamat[,1]),
+                                                               response=(VAR_list[[1]]$datamat[,2]),
+                                                               delta=NULL)[,1],
+                                        Topic=topic_title,topic_number,Index=index_i)
+  
+  
+  
+  
+  irf_list_0[[index_i]] <-   data.frame(Party="Democratic", 
+                                        Lower=DeltaLOtoDeltaProb(var_irf_0$Lower[[1]],
+                                                                 impulse=(VAR_list[[1]]$datamat[,2]),
+                                                                 response=(VAR_list[[1]]$datamat[,1]),
+                                                                 delta=NULL)[,1],
+                                        Upper=DeltaLOtoDeltaProb(var_irf_0$Upper[[1]],
+                                                                 impulse=(VAR_list[[1]]$datamat[,2]),
+                                                                 response=(VAR_list[[1]]$datamat[,1]),
+                                                                 delta=NULL)[,1],
+                                        IRF=DeltaLOtoDeltaProb(var_irf_0$irf[[1]],
+                                                                 impulse=(VAR_list[[1]]$datamat[,2]),
+                                                                 response=(VAR_list[[1]]$datamat[,1]),
+                                                                 delta=NULL)[,1],
+                                        Topic=topic_title,topic_number,Index=index_i)
+  print(irf_list_1[[index_i]]$IRF[1])
+  print(irf_list_0[[index_i]]$IRF[1])
+                                                                     
+  names(irf_list_1[[index_i]]) <- c("Party","Lower","Upper","IRF","Topic")
+  names(irf_list_0[[index_i]]) <- c("Party","Lower","Upper","IRF","Topic")
+  
+  index_i <- index_i+1
+   
+  }
+
+  
+  idx=idx+1
+  }
+  }
+
+
+   irf_df_d_1 <- rbindlist(irf_list_1)
+   irf_df_d_0 <- rbindlist(irf_list_0)
+names(irf_df_d_1)[6:7]<-c("topic_number","Index")
+names(irf_df_d_0)[6:7]<-c("topic_number","Index")
+
+irf_df_d_0 <- irf_df_d_0 %>% 
+  mutate(Agent="Members",
+         Driver="Members Influence on Leaders")
+irf_df_d_1 <- irf_df_d_1 %>% 
+  mutate(Agent="Leader", 
+         Driver="Leaders Influence on Members")
+
+irf_df_d <- rbind(irf_df_d_0,irf_df_d_1)
+
+irf_df_d<- irf_df_d %>% 
+  group_by(Topic,Agent) %>% 
+  mutate(counter=1:n())
+
+indices_ts_plot <- unique(irf_df_d$Index)
+topics_ts_plot  <- unique(irf_df_d$Topic) 
+index_t=1
+adf_result_d <- list()
+for(ii in indices_ts_plot){
+  
+  df_plot <- VAR_list[[ii]]$y
+  colnames(df_plot) <- c("DEM_Leader","Avg_DEM_MoC")
+  df_plot <- as_tibble(df_plot) %>% 
+    mutate(Day = 1:n())
+  df_plot <- df_plot %>% 
+    gather(Agent,
+           topic_prob,
+           DEM_Leader:Avg_DEM_MoC)
+  adf_result_d[[index_t]]<-list(tseries::adf.test(ts(df_plot%>%
+                                                       filter(Agent=="DEM_Leader")%>%
+                                                       dplyr::select(topic_prob))),
+                              tseries::adf.test(ts(df_plot%>%
+                                                     filter(Agent=="Avg_DEM_MoC")%>%
+                                                     dplyr::select(topic_prob))))
+  tt_title <- unique(topicnames_parse[ii]) 
+  g<-ggplot(data=df_plot,aes(x=Day,
+                             y=topic_prob))+
+    ggtitle(paste0("Log Odds: ", tt_title))+
+    geom_line(colour="blue")+
+    geom_line(y = 0)+
+    facet_wrap_paginate(~as.factor(Agent),scales = "free",ncol=1,shrink=F)+
+    theme_bw()+
+    ylab("Log Odds")
+  
+  pdf(paste0("/home/debanks/congress_centrality/plots/TS_LO_Dem_",ii,".pdf")) 
+  plot(g)
+  dev.off()
+  index_t=index_t+1
+}
+
+for(ii in indices_ts_plot){
+  
+  tt_title <- unique(topicnames_parse[ii])
+pdf(paste0("/home/debanks/congress_centrality/plots/TopicIRFDem_",ii,".pdf"))
+g<-ggplot(data=irf_df_d  %>%
+            filter(Index==ii),
+          aes(x=counter,
+              y=IRF))+
+  geom_line(colour="blue")+
+  geom_line(y = 0)                        +
+  geom_ribbon(aes(ymin=as.data.frame(irf_df_d    %>%
+                                       ungroup() %>%
+                                       filter(Index==ii) %>%
+                                       dplyr::select(Lower))[[1]], 
+                  ymax=as.data.frame(irf_df_d   %>%
+                                       ungroup()%>%
+                                       filter(Index==ii)%>%
+                                       dplyr::select(Upper))[[1]],
+                  fill="95% Bootstrap CI"), 
+              linetype=2, 
+              alpha=0.1)         +
+  scale_fill_manual("",values=c("dodgerblue2"))                            +
+  facet_wrap_paginate(~as.factor(Driver),
+                      scales = "fixed",
+                      ncol=2,
+                      shrink=F) +
+  ylab("Change in Topic Attention (p.p.)")                                 +
+  theme_bw()+
+  theme(legend.position = "bottom")                             +
+  ggtitle(paste0("Topic: ",tt_title))
+plot(g)
+ dev.off()
+
+}
+
+
+list_topic_gc_d<-list()
+index=1
+for(i in 1:length(VAR_list)){
+  
+  store<-lmtest::grangertest(VAR_list[[i]]$datamat[,1],
+                             VAR_list[[i]]$datamat[,2],
+                             order=VAR_list[[i]]$p)$`Pr(>F)` 
+  if(store[2]<0.11){
+    list_topic_gc_d[[index]] <- i
+    print(i)
+    index=index+1
+  }
+  
+}
+
+list_topic_gc_d<- unlist(list_topic_gc_d)
+
+pdf(paste0("/home/debanks/congress_centrality/plots/LeadInitialIRFDem.pdf"))
+
+df.plot <-irf_df_d%>%mutate(TopicTitle = as.factor(case_when(Index==Index ~topicnames_parse[Index])),
+                            Driver     = as.factor(Driver)) %>% 
+  filter(counter==1,Upper<10,
+         Index %in%list_topic_gc_d,
+         Driver=="Leaders Influence on Members" )
+g<- ggplot(aes( IRF,as.factor(TopicTitle)),data=df.plot) + 
+  geom_point(size=1,color="blue") +
+  geom_errorbarh(aes(xmin = Lower, xmax = Upper),
+                 height = 1, 
+                 linetype="solid",
+                 color="dodgerblue2") + 
+  geom_vline(aes(xintercept=0), linetype="solid")+
+  ylab("Sentiment-Topic") +
+  xlab("Percentage Point Increase\n in Daily Attention") +
+  theme(axis.text = element_text(size = 1))+
+  theme_bw()
+plot(g)
+dev.off()  
+
+mem_dc_cause_t_d <-list()
+index <-1
+for(i in 1:length(VAR_list)){
+  store<-lmtest::grangertest(VAR_list[[i]]$datamat[,2],
+                             VAR_list[[i]]$datamat[,1],
+                             order= VAR_list[[i]]$p)$`Pr(>F)` 
+  if(store[2]<0.11){
+    print(i)
+    mem_dc_cause_t_d[[index]] <-i
+    index=index+1
+  }
+  
+}
+mem_dc_cause_t_d<- unlist(mem_dc_cause_t_d)
+
+
+pdf(paste0("/home/debanks/congress_centrality/plots/MemInitialIRFDem.pdf"))
+
+df.plot <-irf_df_d%>%
+  mutate(TopicTitle = as.factor(case_when(Index==Index ~topicnames_parse[Index])), 
+         Driver     = as.factor(Driver)) %>%
+  filter(counter ==1,  
+         Upper<10, 
+         Index   %in% mem_dc_cause_t_d,
+         Driver  ==   "Members Influence on Leaders")
+g <- ggplot(aes( IRF,as.factor(TopicTitle)),data=df.plot) + 
+  geom_point(size=1,color="blue")                         +
+  geom_errorbarh(aes(xmin = Lower, xmax = Upper),
+                 height = 1, 
+                 linetype="solid",
+                 color="dodgerblue2") + 
+  geom_vline(aes(xintercept=0), linetype="solid")+
+  ylab("Sentiment-Topic") +
+  xlab("Percentage Point Increase\n in Daily Attention") +
+  theme(axis.text = element_text(size = 1))+
+  theme_bw()
+plot(g)
+dev.off()  
+
+
+
+save(VAR_list,file="/home/debanks/congress_centrality/DEM_var_list.RData")
+
+ ######################################################## 
+#Republican VAR plots 
+
+GOP_vec <- theta %>% dplyr::filter(party=="r") %>%
+  mutate(leader=case_when(handle %in% c("@gopleader","@stevescalise","@replizcheney") ~1,
+                          !(handle %in% c("@gopleader","@stevescalise","@replizcheney")) ~0))     
+
+GOP_vec_nonleader <-  GOP_vec %>% mutate(Date = as.Date(paste0(day,"-",month,"-",year ),format="%d-%b-%Y"))%>%
+  group_by(Date,leader) %>% filter(leader==0) %>%
+  summarise(dplyr::across(topic1sent1:sent3,mean)) %>% 
+  mutate(handle="Members") %>%
+  dplyr::select(Date, handle,topic1sent1:sent3)
+
+GOP_vec_leader <-  GOP_vec %>% mutate(Date = as.Date(paste0(day,"-",month,"-",year ),format="%d-%b-%Y"))%>%
+  group_by(Date,leader) %>% filter(leader==1) %>%
+  summarise(dplyr::across(topic1sent1:sent3,mean)) %>% 
+  mutate(handle="Leaders") %>%
+  dplyr::select(Date, handle,topic1sent1:sent3)
+
+GOP_vec_all <- rbind(GOP_vec_leader,GOP_vec_nonleader)
+
+GOP_vec_wide <- GOP_vec_all%>% ungroup()%>% 
+   dplyr::select(Date, handle,topic1sent1:sent3) %>%
+  pivot_wider(names_from=handle,values_from=c(topic1sent1:sent3)) 
+GOP_vec_wide <- GOP_vec_wide %>% na.omit()
+
+
+
+#initialize lists
+VAR_list <- list()
+
+
+irf_list_1 <-list()
+irf_list_0 <-list()
+
+idx=1
+index_i =1
+for(i in seq(2,(length(GOP_vec_wide)-1),by=2))   {
+  ts.mat <-ts(GOP_vec_wide[,i:(i+1)])
+  topic_number <- gsub("_(.*)","",colnames(ts.mat))[1]
+  topic_title  <- paste(topicnames[colnames(topicnames)==topic_number][1,1],
+                        topicnames[colnames(topicnames)==topic_number][2,1],
+                        topicnames[colnames(topicnames)==topic_number][3,1],
+                        topicnames[colnames(topicnames)==topic_number][4,1])
+  ts.mat <- log(ts.mat/(1-ts.mat))
+  sds <- c(sd(ts.mat[,1]),sd(ts.mat[,2]))
+
+
+  var_aic <- VAR(ts.mat, type = "const", lag.max = 7, ic = "AIC")
+  optimalP<-var_aic$p
+  if(!length(topic_title)==0){
+    #VAR_list[[idx]] <- vec2var(ca.jo(ts.mat,type="eigen", optimalP, ecdet = "trend",spec="transitory"),r=1)
+    print(topic_title)
+    
+    VAR_list[[idx]] <- VAR( ts.mat, optimalP, type = "const")
+    
+    
+    member_strings <- names(VAR_list[[idx]]$datamat)[2]
+    leader_strings <- names(VAR_list[[idx]]$datamat)[1]
+    
+    var_irf_1 <- irf_corrected(VAR_list[[idx]] ,
+                               impulse = leader_strings, 
+                               response = member_strings,
+                               n.ahead=25,
+                               shock=1,
+                               runs = 200,
+                               ortho = T)
+    var_irf_0 <- irf_corrected(VAR_list[[idx]], 
+                               impulse = member_strings, 
+                               response =leader_strings,
+                               n.ahead = 25,
+                               shock = 1,
+                               runs = 200,
+                               ortho = T)
+    
+    plot(var_irf_1)
+    plot(var_irf_0)
+    print(optimalP)
+    
+    #create dataset of topics where leaders lead that are not sentiments
+    if(var_irf_1$Lower[[1]][1] >-100) {
+      
+      irf_list_1[[index_i]] <-   data.frame(Party="Republican",
+                                            Lower=DeltaLOtoDeltaProb(var_irf_1$Lower[[1]],
+                                                                     impulse=(VAR_list[[1]]$datamat[,1]),
+                                                                     response=(VAR_list[[1]]$datamat[,2]),
+                                                                     delta=NULL)[,1],
+                                            Upper=DeltaLOtoDeltaProb(var_irf_1$Upper[[1]],
+                                                                     impulse=(VAR_list[[1]]$datamat[,1]),
+                                                                     response=(VAR_list[[1]]$datamat[,2]),
+                                                                     delta=NULL)[,1],
+                                            IRF=DeltaLOtoDeltaProb(var_irf_1$irf[[1]],
+                                                                   impulse=(VAR_list[[1]]$datamat[,1]),
+                                                                   response=(VAR_list[[1]]$datamat[,2]),
+                                                                   delta=NULL)[,1],
+                                            Topic=topic_title,
+                                            topic_number,
+                                            Index=index_i)
+      
+      
+      
+      irf_list_0[[index_i]] <-   data.frame(Party="Republican", 
+                                            Lower=DeltaLOtoDeltaProb(var_irf_0$Lower[[1]],
+                                                                     impulse=(VAR_list[[1]]$datamat[,2]),
+                                                                     response=(VAR_list[[1]]$datamat[,1]),
+                                                                     delta=NULL)[,1],
+                                            Upper=DeltaLOtoDeltaProb(var_irf_0$Upper[[1]],
+                                                                     impulse=(VAR_list[[1]]$datamat[,2]),
+                                                                     response=(VAR_list[[1]]$datamat[,1]),
+                                                                     delta=NULL)[,1],
+                                            IRF=DeltaLOtoDeltaProb(var_irf_0$irf[[1]],
+                                                                   impulse=(VAR_list[[1]]$datamat[,2]),
+                                                                   response=(VAR_list[[1]]$datamat[,1]),
+                                                                   delta=NULL)[,1],
+                                            Topic=topic_title,
+                                            topic_number,
+                                            Index=index_i)
+      print(irf_list_1[[index_i]]$IRF[1])
+      print(irf_list_0[[index_i]]$IRF[1])
+      names(irf_list_1[[index_i]]) <- c("Party","Lower","Upper","IRF","Topic")
+      names(irf_list_0[[index_i]]) <- c("Party","Lower","Upper","IRF","Topic")
+      
+      index_i <- index_i+1
+      
+    }
+    
+    
+    idx=idx+1
+  }
+}
+
+
+irf_df_r_1 <- rbindlist(irf_list_1)
+irf_df_r_0 <- rbindlist(irf_list_0)
+names(irf_df_r_1)[6:7]<-c("topic_number","Index")
+names(irf_df_r_0)[6:7]<-c("topic_number","Index")
+
+irf_df_r_0 <- irf_df_r_0 %>% 
+  mutate(Agent="Members",
+         Driver="Members Influence on Leaders")
+irf_df_r_1 <- irf_df_r_1 %>% 
+  mutate(Agent  ="Leader", 
+         Driver ="Leaders Influence on Members")
+
+irf_df_r <- rbind(irf_df_r_0,irf_df_r_1)
+
+irf_df_r<- irf_df_r %>% 
+  group_by(Topic,Agent) %>% 
+  mutate(counter=1:n())
+
+indices_ts_plot <- unique(irf_df_r$Index)
+topics_ts_plot  <- unique(irf_df_r$Topic) 
+index_t=1
+adf_result_r <- list()
+
+for(ii in indices_ts_plot){
+  
+  df_plot <- VAR_list[[ii]]$y
+  colnames(df_plot) <- c("GOP_Leader",
+                         "Avg_GOP_MoC")
+  
+  df_plot <- as_tibble(df_plot) %>% 
+             mutate(Day = 1:n())
+  
+  df_plot <- df_plot %>% 
+    gather(Agent,topic_prob,
+           GOP_Leader:Avg_GOP_MoC)
+  
+  adf_result_r[[index_t]]<- list(tseries::adf.test(ts(df_plot%>%
+                                                        filter(Agent=="GOP_Leader")%>%
+                                                        dplyr::select(topic_prob))),
+                                tseries::adf.test(ts(df_plot%>%
+                                                       filter(Agent=="Avg_GOP_MoC")%>%
+                                                       dplyr::select(topic_prob))))
+  tt_title <- topicnames_parse[ii]
+  g<-ggplot(data=df_plot,
+            aes(x=Day,y=topic_prob))+
+    ggtitle(paste0("Log Odds: ", tt_title))+
+    geom_line(colour="red")+
+    geom_line(y = 0)+
+    facet_wrap_paginate(~as.factor(Agent),
+                        scales = "free",
+                        ncol=1,
+                        shrink=F)+
+    theme_bw()+
+    ylab("Log Odds")
+  
+  pdf(paste0("/home/debanks/congress_centrality/plots/TS_LO_Rep_",ii,".pdf")) 
+  plot(g)
+  dev.off()
+}
+
+
+
+for(ii in indices_ts_plot){
+  
+  tt_title <- unique(topicnames_parse[ii])
+  pdf(paste0("/home/debanks/congress_centrality/plots/TopicIRFRep_",tt,".pdf"))
+  g<-ggplot(data=irf_df_r  %>%
+              filter(Index==ii),
+            aes(x=counter,
+                y=IRF))+
+    geom_line(colour="red")+
+    geom_line(y = 0)+
+    geom_ribbon(aes(ymin=as.data.frame(irf_df_r  %>%ungroup() %>%
+                                      filter(Index==ii)%>%
+                                        dplyr::select(Lower))[[1]], 
+                    ymax=as.data.frame(irf_df_r  %>%
+                                       ungroup()  %>%
+                                       filter(Index==ii)%>%
+                                       dplyr::select(Upper))[[1]],
+                    fill="95% Bootstrap CI"), 
+                linetype=2, 
+                alpha=0.1) +
+    scale_fill_manual("",values=c("firebrick2"))+
+    facet_wrap_paginate(~as.factor(Driver),
+                        scales = "fixed",
+                        ncol   = 2,
+                        shrink = F)+
+    ylab("Change in Topic Attention (p.p.)")+
+    theme_bw()+
+    theme(legend.position = "bottom")+
+    ggtitle(paste0("Topic: ",tt_title))
+  plot(g)
+  dev.off()
+  plot(g)
+}
+
+list_topic_gc_r<-list()
+index=1
+for(i in 1:length(VAR_list)){
+  
+  store<-lmtest::grangertest(VAR_list[[i]]$datamat[,1],
+                             VAR_list[[i]]$datamat[,2],
+                             order=VAR_list[[i]]$p)$`Pr(>F)` 
+  if(store[2]<0.11){
+    list_topic_gc_r[[index]] <- i
+    print(i)
+    index=index+1
+  }
+  
+}
+list_topic_gc_r  <- unlist(list_topic_gc)
+print(length(list_topic_gc))
+
+pdf(paste0("/home/debanks/congress_centrality/plots/LeadInitialIRFRep.pdf"))
+
+df.plot <-irf_df_r%>%
+  mutate(TopicTitle = as.factor(case_when(Index==Index ~topicnames_parse[Index])),
+        Driver      = as.factor(Driver)) %>%
+  filter(counter==1,Upper<10,Index %in% list_topic_gc_r,
+         Driver=="Leaders Influence on Members" )
+
+g<- ggplot(aes( IRF,as.factor(TopicTitle)),data=df.plot) + 
+  geom_point(size=1,color="red") +
+  geom_errorbarh(aes(xmin = Lower, xmax = Upper),
+                 height = 1, 
+                 linetype="solid",
+                 color="firebrick2") + 
+  geom_vline(aes(xintercept=0), linetype="solid")+
+  ylab("Sentiment-Topic") +
+  xlab("Percentage Point Increase\n in Daily Attention") +
+  theme(axis.text = element_text(size = 1))+
+  theme_bw()
+plot(g)
+dev.off()  
+
+mem_dc_cause_t_r <-list()
+index <-1
+for(i in 1:length(VAR_list)){
+  store<-lmtest::grangertest(VAR_list[[i]]$datamat[,2],
+                             VAR_list[[i]]$datamat[,1],
+                             order= VAR_list[[i]]$p)$`Pr(>F)` 
+  if(store[2]<0.1){
+    print(i)
+    mem_dc_cause_t_r[[index]] <-i
+    index=index+1
+  }
+  
+}
+mem_dc_cause_t_r<- unlist(mem_dc_cause_t_r)
+
+
+pdf(paste0("/home/debanks/congress_centrality/plots/MemInitialIRFRep.pdf"))
+  
+  df.plot <-irf_df_r%>%mutate(TopicTitle = as.factor(case_when(Index==Index ~topicnames_parse[Index])),
+                              Driver=as.factor(Driver)) %>%
+    filter(counter==1,Upper<10, 
+           Index %in% mem_dc_cause_t_r,
+           Driver=="Members Influence on Leaders")
+  
+    g<- ggplot(aes( IRF,as.factor(TopicTitle)),
+               data=df.plot) + 
+      geom_point(size=1,
+                 color="red") +
+      geom_errorbarh(aes(xmin = Lower, 
+                         xmax = Upper),
+                     height = 1, 
+                     linetype="solid",
+                     color="firebrick2") + 
+      geom_vline(aes(xintercept=0), linetype="solid")+
+      ylab("Sentiment-Topic") +
+      xlab("Percentage Point Increase\n in Daily Attention") +
+      theme(axis.text = element_text(size = 1))+
+      theme_bw()
+    plot(g)
+dev.off()  
+
+
+
+save(VAR_list,file="/home/debanks/congress_centrality/REP_var_list.RData")
+######################################
+
+
+## Label Topics
+TopicTable <- data.frame(Label=colnames(topicnames),TopicTitle=topicnames_parse,Words=paste(topicnames))
+TopicTable$Words <- gsub("(,)"," ",TopicTable$Words)
+TopicTable$Words <- gsub("(\\))","",TopicTable$Words)
+TopicTable$Words <- gsub("/\\)","",TopicTable$Words)
+TopicTable$Words <- gsub("/\\(/","",TopicTable$Words)
+TopicTable$Words <- gsub("\"","",TopicTable$Words)
+TopicTable$Words <- gsub("c[(]","",TopicTable$Words)
+
+TopicTable$Topic <-gsub("sent.","",TopicTable$Label)
+TopicTable$Sent <-gsub("^.*s","s",TopicTable$Label)
+
+#Find top topics
+coord  <- res.var$coord
+coord <- as.data.frame(res.var$coord) %>% 
+  mutate(Label=rownames(coord)) %>%
+  arrange(-abs(Dim.2)) %>%
+  dplyr::select(Label,Dim.2,Dim.1)
+
+
+coord <- coord %>% 
+  left_join(TopicTable) %>% 
+  dplyr::select(TopicTitle,
+                Dim.2)
+coord_d <- coord%>% filter(Dim.2>0)
+coord_r <- coord%>% filter(Dim.2<0)
+
+
+##
+
+irf_df <- rbind(irf_df_d,irf_df_r)
+
+
+mem_only_r   <- setdiff(mem_dc_cause_t_r,list_topic_gc_r)
+lead_only_r  <- setdiff(list_topic_gc_r,mem_dc_cause_t_r)
+mem_only_d   <- setdiff(mem_dc_cause_t_d,list_topic_gc_d)
+lead_only_d  <- setdiff(list_topic_gc_d,mem_dc_cause_t_d)
+both_r <- intersect(list_topic_gc_r,mem_dc_cause_t_r)
+both_d <- intersect(list_topic_gc_d,mem_dc_cause_t_d)
+
+irf_df<-irf_df %>% mutate(granger =case_when(Index %in% mem_only_r  &Party=="Republican" ~"GOP Member Initiated",
+                                      Index %in% lead_only_r  &Party=="Republican" ~"GOP Leader Initiated", 
+                                      Index %in% both_r& Party=="Republican"~"GOP Both Initiated",
+                                      Index %in% lead_only_d   & Party=="Democratic" ~"Dem Leader Initiated",
+                                      Index %in% mem_only_d  & Party=="Democratic" ~"Dem Member Initiated",
+                                      Index %in% both_d& Party=="Democratic"~"Dem Both Initiated",
+                                      TRUE ~ "Neither"
+)) %>%left_join(TopicTable%>%dplyr::select(Label,TopicTitle),by=c("topic_number"="Label"))
+  
+
+
+contribs <- res.var$contrib
+contribs <- as.data.frame(contribs)%>% mutate(Label=rownames(contribs))
+contribs <- contribs %>% 
+  left_join(TopicTable) %>% 
+  dplyr::select(TopicTitle,
+                Dim.1,
+                Dim.2)
+
+
+contribs_strip<-contribs %>%
+  arrange(-Dim.2) %>%
+  dplyr::select(TopicTitle,
+                Dim.2) %>%
+  rename_at(vars(TopicTitle,
+                 Dim.2),
+            ~c("Topic","Contribution")) %>%
+  na.omit()
+
+
+irf_df<-irf_df %>% 
+  mutate(predicted =case_when( TopicTitle %in% coord_d$Topic[1:10]  &Party=="Democratic" ~ "Predicted Dem Leader Initiated",
+                               TopicTitle %in% coord_d$Topic[11:48] &Party=="Democratic" ~ "Predicted Dem Member Initiated",
+                               TopicTitle %in% coord_r$Topic[1:10]     &Party=="Democratic" ~ "Predicted Dem Leader Initiated",
+                               TopicTitle %in% coord_r$Topic[11:36]     &Party=="Democratic"~"Predicted Dem Member Initiated",
+                               
+                               TopicTitle %in% coord_r$Topic[1:10]      &Party=="Republican" ~ "Predicted GOP Leader Initiated",
+                               TopicTitle %in% coord_r$Topic[11:36]     &Party=="Republican" ~ "Predicted GOP Member Initiated",
+                               TopicTitle %in% coord_d$Topic[1:10]      &Party=="Republican" ~ "Predicted GOP Leader Initiated",
+                               TopicTitle %in% coord_d$Topic[11:48]     &Party=="Republican"~  "Predicted GOP Member Initiated"
+                               
+  ))
+
+
+
+
+irf_df <-irf_df %>% mutate(Hypothesis =case_when(granger=="Neither"&predicted=="Predicted Neither" ~1,
+                            granger%in%c("Dem Leader Initiated","Dem Both Initiated")&predicted=="Predicted Dem Leader Initiated" ~1,
+                            granger%in%c("GOP Leader Initiated","GOP Both Initiated")&predicted=="Predicted GOP Leader Initiated" ~1,
+                            granger%in%c("Dem Member Initiated","Dem Both Initiated")&predicted=="Predicted Dem Member Initiated" ~1,
+                            granger%in%c("GOP Member Initiated","GOP Both Initiated")&predicted=="Predicted GOP Member Initiated" ~1,
+                            TRUE ~0))
+sum(irf_df%>%filter(Party=="Republican")%>%ungroup() %>%dplyr::select(Hypothesis))/nrow(irf_df%>%filter(Party=="Republican"))
+sum(irf_df%>%filter(Party=="Democratic")%>%ungroup() %>%dplyr::select(Hypothesis))/nrow(irf_df%>%filter(Party=="Democratic"))
+
+
+irf_df <- irf_df %>% mutate(TopicPred =(case_when(Hypothesis==1 ~paste0("*",TopicTitle),
+                                       TRUE ~TopicTitle)))
+
+#irf_df <- irf_df %>% mutate(TopicPred =(case_when(Hypothesis==0 ~paste0("",TopicTitle),
+#                                                  FALSE ~TopicTitle)))
+
+
+source("/home/debanks/congress_centrality/code/IRF_plots.R")
+
+
+
+
+
+
+
+
+
+
+
+
+############################### 
+#Summary Tables
+
+
+
+
+
+print(xtable(TopicTable %>%
+               dplyr::select(Sent,
+                             TopicTitle,
+                             Topic) %>%
+               pivot_wider(names_from = "Sent",
+                           values_from=c("TopicTitle")),
+              label    = "tab:TopicLabels",
+              caption  = "Topic Labels",
+              align    = "ccLLL"),
+                caption.placement = "top",
+                include.rownames  = F,
+                file      = "/home/debanks/congress_centrality/tables/TopicLabels.tex") 
+      
+print(xtable(TopicTable %>%
+            dplyr::select(Sent,Words,Topic) %>%
+            pivot_wider(names_from = "Sent",
+                        values_from=c("Words")),
+          label    = "tab:TopicWords",
+          caption  = "Top 5 Topic Words",
+          align    = "ccLLL"),
+caption.placement = "top",
+include.rownames  = F,
+file      = "/home/debanks/congress_centrality/tables/TopicWords.tex")
+
+
+
+
+addtorow          <- list()
+addtorow$pos      <- list()
+addtorow$pos[[1]] <- c(0)
+addtorow$command  <- c(paste(
+  "\\hline \n",
+  "\\endhead \n",
+  "\\hline \n",
+  "{\\footnotesize Continued on next page} \n",
+  "\\endfoot \n",
+  "\\endlastfoot \n",
+  sep=""))
+
+
+captions_tabs <- c("Daily Propensity: GOP Rank and File",
+                   "Daily Propensity: GOP Leaders",
+                   "Daily Propensity: Democratic Rank and File",
+                   "Daily Propensity: Democratic Leaders")
+table_data_list <- list(GOP_vec_wide,
+                        GOP_vec_wide,
+                        DEM_vec_wide,
+                        DEM_vec_wide)
+subset_cols <- c("_Members",
+                 "_Leaders",
+                 "_Members",
+                 "_Leaders")
+
+file_tabs <-c("tab_DailyAttGOPmem",
+                "tab_DailyAttGOPlead",
+                "tab_DailyAttDEMmem",
+                "tab_DailyAttDEMlead")
+
+label_tabs <-c("tab:DailyAttGOPmem",
+              "tab:DailyAttGOPlead",
+              "tab:DailyAttDEMmem",
+              "tab:DailyAttDEMlead")
+for(tt in 1:length(table_data_list)){
+print(xtable(table_data_list[[tt]]%>%
+  dplyr::select(ends_with(subset_cols[tt])&starts_with("topic")) %>%
+  rename_all( gsub,
+              pattern="_.*",
+              replacement="") %>%
+  rename_at(vars(TopicTable$Label),~TopicTable$TopicTitle)%>%
+  summarise_each(funs(Mean = mean, 
+                      St.dev = sd,
+                      Min = min, 
+                      Q25 = quantile(., 0.25), 
+                      Median = median, 
+                      Q75 = quantile(., 0.75), 
+                      Max = max
+                      )) %>% 
+  gather(stat, val) %>%
+  separate(stat, into = c("Topic", "Statistic"), sep = "_") %>%
+  spread(Statistic, val) %>%
+  dplyr::select(Topic,Mean, St.dev, Min, Q25, Median, Q75, Max) %>%
+  left_join(contribs_strip,by=c("Topic"="TopicTitle"))%>%
+  arrange(-Dim.2)%>%
+    dplyr::select(Topic,Mean, St.dev, Min, Q25, Median, Q75, Max) %>%
+    mutate(Topic,
+           Mean=100*Mean, 
+           St.dev=100*St.dev, 
+           Min=Min*100,
+           Q25=Q25*100, 
+           Median=Median*100, 
+           Q75=Q75*100, 
+           Max=Max*100),
+  caption = captions_tabs[tt],
+  label   = labels_tabs[tt],
+  align="lL|ccccccc"),
+  tabular.environment = "longtable",
+  caption.placement = "top",
+  floating = FALSE,
+  include.rownames = FALSE, # because addtorow will substitute the default row names 
+  add.to.row = addtorow,     # this is where you actually make the substitution
+  hline.after=c(-1),
+  file=paste0("/home/debanks/congress_centrality/tables/table_",file_tabs[tt],".tex")
+)
+}
+
+
+
+
+###
+
+
+
+
+
+for (ff in 1:length(filter_n)){
+  for(kk in k_index){
+    main_data <- main_data_list[[ff]][[k]]$NetsStates %>%group_by(party) %>%na.omit(var_pos1)
+    
+    
+    r_pos <- main_data %>% filter(party=="r") %>%ungroup() %>%dplyr::select(median_pos2)
+    d_pos <-main_data %>% filter(party=="d")%>%ungroup() %>% dplyr::select(median_pos2)
+    
+    main_data$distance_pos<- unlist(rep((d_pos -r_pos),2))
+    pos_data<-main_data %>%group_by(party) %>%na.omit(var_pos2) %>%
+      summarise(cor(Weighted1Betweeness,abs(distance_pos)),cor(Pagerank,abs(distance_pos)),
+                cor(InDegree,abs(distance_pos)),cor(Betweeness,abs(distance_pos)))
+
+    
+    if(sum(main_cors[[ff]][[kk]][,c(4,6)]<0)> 3){
+      if(sum(bet_cors[[ff]][[kk]][,c(2,3,5)]<0)>5){
+       if(sum(pos_data[,2:5] <0)>6){
+          print(ff)
+          print(kk)
+          print(pos_data)
+          print(bet_cors[[ff]][[kk]][,c(2,3,5)])
+          print(main_cors[[ff]][[kk]][,c(4,6)])
+          #print(clust_cors[[ff]][[kk]])
+      }
+      }
+    }
+  }
+}
+
+ 
+
+
+print(xtable(contribs_strip[1:10,], 
+                label    = "tab:TopicContribs_10",
+                caption  = "Top 10 PCA Topic Contributions",
+                align    = "cLc"),
+                caption.placement= "top",
+                include.rownames = F,
+                file      = "/home/debanks/congress_centrality/tables/TopicContribs_10.tex") 
+
+
+
+print(xtable(contribs_strip, 
+             label    = "tab:TopicContribs_all",
+             caption  = "PCA Topic Contributions",
+             align    = "cLc"),
+      tabular.environment = "longtable",
+      caption.placement = "top",
+      floating = FALSE,
+      include.rownames = FALSE, # because addtorow will substitute the default row names 
+      add.to.row = addtorow,     # this is where you actually make the substitution
+      hline.after=c(-1),
+      file      = "/home/debanks/congress_centrality/tables/TopicContribs_all.tex") 
+
+
+## PCA Coordinates
+coord_table <- rbind(coord_d,coord_r)
+coord_table <-coord_table %>% filter(TopicTitle %in% c(coord_r$Topic[1:10] ,coord_d$Topic[1:10] ))
+names(coord_table) <- c("Topic","Coordinate")
+
+print(xtable(coord_table, 
+             label    = "tab:TopicCoord_all",
+             caption  = "Predicted Leader Initiated Topics and Coordinates",
+             align    = "cp{6cm}c",
+             digits=3),
+      caption.placement = "bottom",
+      include.rownames = FALSE, # because addtorow will substitute the default row names 
+      file      = "/home/debanks/congress_centrality/tables/TopicCoord_all.tex") 
+
+
+
+
+theta_summary <- theta %>% 
+                 pivot_longer(cols=(topic1sent1:sent3)) %>% 
+                 group_by(name) %>%
+                 mutate(Max=max(value),doc_id=as.numeric(docID)) %>%
+                 filter(Max==value) %>%
+                 dplyr::select(name,handle,doc_id)   
+  
+theta_emblematic_tweet <- theta_summary %>% 
+  left_join(textData %>%
+              dplyr::select(tweet,doc_id),
+            by="doc_id") %>%
+  left_join(TopicTable%>%
+              dplyr::select(TopicTitle,Label),
+            by=c("name"="Label")) %>%
+  ungroup()%>%
+  dplyr::select(handle,tweet,TopicTitle) %>%
+  na.omit() %>%
+  distinct(TopicTitle,.keep_all = T) %>%
+  arrange(TopicTitle)
+
+stargazer(theta_emblematic_tweet%>%filter(TopicTitle %in% contribs_strip$TopicTitle[c(6,4,5,10,13)]),
+                 summary  = F,
+                 rownames = F,
+                 label    = "tab:EmbTweet",
+                 title    = "Emblematic Tweets",
+                 out      = "/home/debanks/congress_centrality/tables/EmbTweet.tex")
+ 
+
+
+for(ff in 1:length(filter_n)){
+  NetsStates <- main_data_list[[ff]][[6]]$NetsStates
+  print(ff)
+  print(summary(lm(Pagerank~var_pos2,data=NetsStates,subset = party=="r"))$coefficients[2,4])
+  print(summary(lm(Pagerank~var_pos2,data=NetsStates,subset = party=="d"))$coefficients[2,4])
+}

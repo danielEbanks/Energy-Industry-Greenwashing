@@ -1,0 +1,592 @@
+#####
+# House Estimation
+############################
+
+library(ggfortify)
+
+## Joint Topic-Sentiment Modeling 
+
+rm(list=ls())
+
+# Load  NLP Libraries 
+
+library(tidytext)
+library(quanteda)
+library(rJST)
+library(stm)
+library(text2vec)
+library(topicmodels)
+# Utilities 
+library(dplyr)
+library(parallel)
+library(ggplot2)
+library(lubridate)
+
+#cluster analysis 
+library(factoextra)
+library(fpc)
+
+
+# Set Path
+if(Sys.info()[1]!="Windows"){
+  setwd("/home/debanks/Dropbox/TopicSentimentMethods/")
+} else {
+  setwd("/Users/danie/Dropbox/TopicSentimentMethods/")
+}
+
+
+#### Load House Data 
+
+textData <- read.csv("Data/TwitterSpeech.csv")
+textData <- textData[!duplicated(textData$doc_id),]
+
+# create a week
+textData$date <- as.POSIXct(
+  paste0(textData$year,"-",textData$month,"-",textData$day),
+  format="%Y-%b-%e")
+textData$week   <- isoweek(textData$date)
+
+## prepare JST model
+attach(textData)
+llDisplay <- data.frame(doc_id = paste(doc_id),text = paste(tweet),week=week,handle=handle,month=month,day=day,year=year,party=party,state=state,stringsAsFactors = F)
+detach(textData)
+
+stop_words_custom = c("this","discuss","community","learn","congressional","amendment","speaker","say","said","talk","congrats","pelosi","gop","congratulations","are","as","i", "me", "my", "myself", "we", "our", "ours", "ourselves", "you", "your", "yours","he","her","him","she","hers","that","be","with","their","they're","is","was","been","not","they","it","have","will","has","by","for","madam","Speaker","Mister","Gentleman","Gentlewoman","lady","voinovich","kayla","111th","115th","114th","rodgers",         "clerk" ,    "honor" ,   "address"   ,     
+                      "house" , "start"   ,"amend","bipartisan","bill",   "114th"    ,   "congress"  ,     
+                      "one",   "thing"    ,   "learned"    ,   "legislator","things" ,"things","can't","can","cant","will","go","going","let","lets","let's","say","says","know","talk","talked","talks","lady","honorable","dont","think","said","something","something","wont","people","make","want","went","goes","congressmen","people","person","like","come","from","need","us",paste(textData$firstname),paste(tidytext::stop_words$word),stopwords())
+# Create tokens for the words you keep
+toks1 <- tokens(corpus(llDisplay), remove_punct = TRUE)
+toks2 <- tokens_remove(toks1, stop_words_custom)
+toks3 <- tokens_ngrams(toks2, 1:3)
+toks3 <- tokens_wordstem(toks3)
+#toks3 <- tokens_keep(toks3,dfm_speeches@Dimnames$features)
+
+
+N = nrow(llDisplay)
+
+# create a document feature matrix (quanteda style) to run JST
+dfm_speeches <- dfm(toks3 , 
+                    remove_punct = TRUE ,remove_numbers = TRUE,stem = T) %>% 
+  dfm_trim(min_termfreq = 25,min_docfreq =0.002*N,max_docfreq = 0.4*N)
+
+
+
+
+# select number of topics
+kk = c(5,10,15,20,25,28,30,40,50,60)
+
+if(run_jst==1){
+  # Run the model on 10 cores (currently using Betsy's server)
+  print(Sys.time())
+  results <- mclapply(kk,
+                      FUN = function(kk) 
+                        jst(dfm_speeches,
+                            paradigm(),
+                            numTopics = kk,
+                            numSentiLabs = 3,
+                            numIters = 1000),
+                      mc.cores = getOption("mc.cores", 
+                                           10L))  
+  print(Sys.time())
+  
+  save(results,file="modelOutput3senti-House-1000.RData")
+}
+load("Data/modelOutput3senti-House-1000.RData")
+
+
+
+rand_list  <- list()
+clust_data <- list()
+
+main_data_list   <- list()
+k_index  <- seq(1,10,1)
+
+#filter_n <- seq(0,20,10)
+filter_n=20
+n_senti=3
+
+clust_stats_JST <- list()
+for(ff in 1:length(filter_n)){
+  rand_list[[ff]]        <- list()
+  clust_data[[ff]]       <- list()
+  
+  print(ff)
+  #for(k in 1:length(results)){
+  for(k in k_index){
+    
+    # extract parameters 
+    theta <- get_parameter(results[[k]],"theta")
+    phi   <- get_parameter(results[[k]],"phi")
+    pi    <- get_parameter(results[[k]],"pi")
+    
+    
+    
+    
+    #  concatenate sentiment and topic probabilities into one dataframe
+    theta$sent1 <- pi$sent1
+    theta$sent2 <- pi$sent2
+    if(n_senti>2){
+      theta$sent3 <- pi$sent3
+    }
+    
+    
+    theta<-theta %>% filter(!(handle %in%
+                                c( "@drnealdunnfl2", 
+                                   "@repjenniffer", 
+                                   "@sencortezmasto", 
+                                   "@reproybalallard", 
+                                   "@repchriscollins") ))
+    theta$leader <- ifelse(theta$handle%in% c("@speakerpelosi",
+                                              "@gopleader",
+                                              "@replizcheney",
+                                              "@stevescalise",
+                                              "@leaderhoyer",
+                                              "@whipclyburn"),1,0)
+    
+    
+    cutoff<- kk[k]
+    theta_est<-theta
+    theta_est[,9:(9+cutoff)] <- theta[,9:(8+cutoff)]*theta$sent1
+    theta_est[,(9+cutoff):(8+2.5*cutoff)] <- theta[,(9+cutoff):(8+2.5*cutoff)]*theta$sent2
+    theta_est[,(9+2.5*cutoff):(8+3*cutoff)] <- theta[,(9+2.5*cutoff):(8+3*cutoff)]*theta$sent2
+    
+    if(n_senti==3){
+      PCA_vecs_agg    <- theta%>% 
+        group_by(party,handle)%>% 
+        mutate(n_tweets = n()) %>%
+        filter(n_tweets>filter_n[ff]) %>% 
+        ungroup() %>%dplyr::select(party,handle,topic1sent1:sent3) %>% 
+        group_by(party,handle)%>%
+        summarise_all(list(mean))
+    }
+    
+    if(n_senti==2){
+      PCA_vecs_agg    <- theta%>% 
+        group_by(party,handle)%>% 
+        mutate(n_tweets = n()) %>%
+        filter(n_tweets>filter_n[ff]) %>% 
+        ungroup() %>%dplyr::select(party,handle,topic1sent1:sent2) %>% 
+        group_by(party,handle)%>%
+        summarise_all(list(mean))
+    }
+    
+    
+    PCA_vecs_agg$n_tweets <- NULL 
+    
+    #compute hellinger distance 
+    
+    
+    if(n_senti==3){
+      pca_mat <- as.matrix(PCA_vecs_agg%>%ungroup %>%dplyr::select(topic1sent1:sent3))
+      pca_mat <- (pca_mat[,1:(ncol(pca_mat)-n_senti)])
+    }
+    
+    if(n_senti==2){
+      pca_mat <- as.matrix(PCA_vecs_agg%>%ungroup %>%
+                             dplyr::select(topic1sent1:sent2))
+      pca_mat <- (pca_mat[,1:(ncol(pca_mat))])
+    }
+    
+    fit6  <-prcomp(pca_mat) 
+    
+    
+    
+    
+    
+    res.var <- get_pca_var(fit6)
+    ind.var <- get_pca_ind(fit6)
+    pc1 <- ind.var$coord[,1]
+    pc2 <- ind.var$coord[,2]
+    
+    PCA_vecs_agg$dim1 <- pc1
+    PCA_vecs_agg$dim2 <- pc2
+    
+    #stress_list[[ff]][[k]] <-fit4$copstress
+    
+    PCA_vecs_agg %>% group_by(party)%>%filter(abs(dim2)<=0.3) %>% 
+      summarise(n(),mean(dim1),
+                mean(dim2),sd(dim1),sd(dim2))%>%filter('n()'>filter_n[ff])
+    g <- ggplot( PCA_vecs_agg%>%filter(abs(dim2)<=0.3),aes(dim1,dim2,colour=party))+
+      geom_point() + 
+      scale_size_manual(values=c(2,5))+theme_bw()+scale_color_manual(values=c("#2E74C0", "#CB454A"))+
+      ggtitle("Aggregate Message Positions-PCA")+
+      labs(colour="Party")
+    plot(g)
+    pdf(file=paste0("plots/House_total_JST_mespos_agg_",k,".pdf"))
+    plot(g)
+    dev.off()
+    
+    
+    df.clust <- fit6$x[(fit6$x[,2])<(mean(fit6$x[,2]))+(2.5*sd(fit6$x[,2])) &
+                         (fit6$x[,2])>(mean(fit6$x[,2]))-(2.5*sd(fit6$x[,2])) &
+                         (fit6$x[,1])<(mean(fit6$x[,1]))+(2.5*sd(fit6$x[,1])) &
+                         (fit6$x[,1])>(mean(fit6$x[,1]))-(2.5*sd(fit6$x[,1])) 
+                       ,c(1,2)]
+    km.res <- eclust(df.clust , "kmeans", k = 2, nstart = 25, graph = FALSE)
+    party <- as.numeric(factor(PCA_vecs_agg$party[(fit6$x[,2])<(mean(fit6$x[,2]))+(2.5*sd(fit6$x[,2])) &
+                                                    (fit6$x[,2])>(mean(fit6$x[,2]))-(2.5*sd(fit6$x[,2])) &
+                                                    (fit6$x[,1])<(mean(fit6$x[,1]))+(2.5*sd(fit6$x[,1])) &
+                                                    (fit6$x[,1])>(mean(fit6$x[,1]))-(2.5*sd(fit6$x[,1]))]))
+    
+    clust_stats_JST[[k]] <- data.frame(vi=cluster.stats(d = dist(df.clust ), 
+                                                        alt.clustering=party, clustering=km.res$cluster)$vi,
+                                       rand=cluster.stats(d = dist(df.clust), alt.clustering=party, clustering=km.res$cluster)$corrected.rand,
+                                       topic_n=k,model="JST") 
+  }   
+}   
+
+clust_stats_JST <- data.table::rbindlist(clust_stats_JST)
+clust_stats_JST$topic_n <- kk 
+
+##########
+
+houseDfmSTM <- convert(dfm_speeches, to = "stm", 
+                        docvars = docvars(dfm_speeches))
+
+houseDfmSTM$meta$date <- as.POSIXct(
+  paste0(houseDfmSTM$meta$year,"-",houseDfmSTM$meta$month,"-",houseDfmSTM$meta$day),
+  format="%Y-%b-%e")
+
+documents <- houseDfmSTM$documents
+vocab <- houseDfmSTM$vocab
+meta <- houseDfmSTM$meta
+
+model <- list()
+
+ model_stm <- mclapply(kk,
+                   FUN = function(kk) 
+                     stm(houseDfmSTM$documents, 
+                         houseDfmSTM$vocab,
+                         K = kk,
+                         prevalence=~factor(party)  + factor(state) + as_date(date),
+                         max.em.its = 200,
+                         data = houseDfmSTM$meta, 
+                         init.type = "Spectral",
+                         seed = 153332),
+   mc.cores = getOption("mc.cores", 
+                        5L)) 
+ 
+ save(model_stm,file="modelOutput-House-STM.RData")
+ 
+ load("modelOutput-House-STM.RData")
+####
+ 
+dtm_speeches <- convert(dfm_speeches, to = "topicmodels") 
+ model_lda   <- mclapply(kk,
+                       FUN = function(kk){ 
+                         LDA(dtm_speeches, k = kk)},
+                       mc.cores = getOption("mc.cores", 
+                                            5L)) 
+ 
+ 
+ 
+ dtm <- dfm(dfm_speeches,verbose = F)
+ tcm <- Matrix::crossprod(sign(dtm))
+ 
+
+   
+  
+  top20word_stm <-as.vector(labelTopics(model_stm[[4]], topics = NULL, n = 20, frexweight = 0.5))[[4]]
+  top20word_stm <- t(top20word_stm)
+  
+  labels <- labelTopics(model_stm[[4]], topics = NULL, n = 20, frexweight = 0.5)
+  coherence_stm <- colMeans(coherence(as.matrix(top20word_stm), tcm, metrics = c("mean_logratio", "mean_pmi", "mean_npmi",
+                                                                                 "mean_difference", "mean_npmi_cosim", "mean_npmi_cosim2"),
+                                      smooth = 1e-12, n_doc_tcm = N),na.rm=T)
+  
+  
+  result_stm <-sapply(seq(1:10),FUN=function(x) colMeans(coherence(t(as.vector(labelTopics(model_stm[[x]], topics = NULL, n = 20, frexweight = 0.5))[[4]]), 
+                                                                  tcm, metrics = c("mean_logratio", "mean_pmi", "mean_npmi",
+                                                                                                                        "mean_difference", "mean_npmi_cosim", "mean_npmi_cosim2"),
+                                                                  smooth = 1e-12, n_doc_tcm = N),na.rm=T))
+  
+  result_co <-sapply(seq(1:10),FUN=function(x) colMeans(coherence(as.matrix(top20words(results[[x]])), tcm, metrics = c("mean_logratio", "mean_pmi", "mean_npmi",
+                                                                                                                        "mean_difference", "mean_npmi_cosim", "mean_npmi_cosim2"),
+                                                                  smooth = 1e-12, n_doc_tcm = N),na.rm=T))
+  # extract parameters 
+  
+    ### STM PCA
+  
+  filter_n=20
+  ff=1
+  clust_stats_STM <- list()
+  for (k in 1:length(kk)){
+  theta_stm        <- as.data.frame(cbind(as.matrix(model_stm[[k]]$settings$covariates$X),model_stm[[k]]$theta))
+  theta_stm$handle <- houseDfmSTM$meta$handle
+
+  
+  
+  theta_stm<-theta_stm %>% filter(!(handle %in%
+                              c( "@drnealdunnfl2", 
+                                 "@repjenniffer", 
+                                 "@sencortezmasto", 
+                                 "@reproybalallard", 
+                                 "@repchriscollins") ))
+  theta_stm$leader_stm <- ifelse(theta_stm$handle%in% c("@speakerpelosi",
+                                            "@gopleader",
+                                            "@replizcheney",
+                                            "@stevescalise",
+                                            "@leaderhoyer",
+                                            "@whipclyburn"),1,0)
+  
+  
+  PCA_vecs_agg    <- as.data.frame(theta_stm)%>% 
+    group_by(`factor(party)r`, handle)%>% 
+    mutate(n_tweets = n()) %>%
+    filter(n_tweets>filter_n[ff]) %>% 
+    ungroup() %>% 
+    group_by(`factor(party)r`,handle)%>%
+    summarise_all(list(mean))
+  
+  fit_stm<-prcomp(as.matrix(PCA_vecs_agg%>%ungroup()%>%dplyr::select(starts_with("V")))) 
+  
+  
+  
+  res.var <- get_pca_var(fit_stm)
+  ind.var <- get_pca_ind(fit_stm)
+  pc1 <- ind.var$coord[,1]
+  pc2 <- ind.var$coord[,2]
+  
+  PCA_vecs_agg$dim1 <- pc1
+  PCA_vecs_agg$dim2 <- pc2
+  
+  #stress_list[[ff]][[k]] <-fit4$copstress
+  
+  PCA_vecs_agg %>% group_by(`factor(party)r`)%>%filter(abs(dim2)<=0.3) %>% 
+    summarise(n(),mean(dim1),
+              mean(dim2),sd(dim1),sd(dim2))%>%filter('n()'>filter_n[ff])
+  g <- ggplot( PCA_vecs_agg%>%filter(abs(dim2)<=0.3),aes(dim1,dim2,colour=as.factor(`factor(party)r`)))+
+    geom_point() + 
+    scale_size_manual(values=c(2,5))+theme_bw()+scale_color_manual(values=c("#2E74C0", "#CB454A"))+
+    ggtitle("Aggregate Message Positions-PCA")+
+    labs(colour="Party")
+  plot(g)
+  pdf(file=paste0("plots/MDS_STM_House_total_mespos_agg_",k,".pdf"))
+  plot(g)
+  dev.off()
+  
+  ## clusters 
+  
+  # Compute cluster stats
+  df.clust <- fit_stm$x[(fit_stm$x[,2])<(mean(fit_stm$x[,2]))+(2.5*sd(fit_stm$x[,2])) &
+                          (fit_stm$x[,2])>(mean(fit_stm$x[,2]))-(2.5*sd(fit_stm$x[,2])) &
+                          (fit_stm$x[,1])<(mean(fit_stm$x[,1]))+(2.5*sd(fit_stm$x[,1])) &
+                          (fit_stm$x[,1])>(mean(fit_stm$x[,1]))-(2.5*sd(fit_stm$x[,1])) 
+                        ,c(1,2)]
+  km.res <- eclust(df.clust , "kmeans", k = 2, nstart = 25, graph = FALSE)
+  party <- as.numeric(factor(PCA_vecs_agg$`factor(party)r`[(fit_stm$x[,2])<(mean(fit_stm$x[,2]))+(2.5*sd(fit_stm$x[,2])) &
+                                                               (fit_stm$x[,2])>(mean(fit_stm$x[,2]))-(2.5*sd(fit_stm$x[,2])) &
+                                                               (fit_stm$x[,1])<(mean(fit_stm$x[,1]))+(2.5*sd(fit_stm$x[,1])) &
+                                                               (fit_stm$x[,1])>(mean(fit_stm$x[,1]))-(2.5*sd(fit_stm$x[,1]))]))
+  
+  clust_stats_STM[[k]] <- data.frame(vi=cluster.stats(d = dist(df.clust ), 
+                                alt.clustering=party, clustering=km.res$cluster)$vi,
+  rand=cluster.stats(d = dist(df.clust), alt.clustering=party, clustering=km.res$cluster)$corrected.rand,
+  topic_n=k,model="STM") 
+                                                                                               
+
+  } 
+  
+  
+  ## Plots comparing clustering 
+  
+  clust_stats_STM <- data.table::rbindlist(clust_stats_STM)
+  clust_stats_STM$topic_n = kk
+  ### Plots comparing Coherence
+  
+
+
+  sep_plot <- rbind(clust_stats_JST,clust_stats_STM)  
+  
+  pdf("Figures/House-Clust-Sep_vi.pdf")
+  g <- ggplot(data=sep_plot,aes(x=topic_n,y=vi,colour=as.factor(model)))+
+                geom_line()+xlab("Number of Topics") +ylab("Variation of Information") + 
+    labs(colour = "Model")
+  plot(g)
+  dev.off()
+  pdf("Figures/House-Clust-Sep_rand.pdf")
+  g <- ggplot(data=sep_plot,aes(x=topic_n,y=rand,colour=as.factor(model)))+
+    geom_line()+xlab("Number of Topics") +ylab("Corrected Rand Index") + 
+    labs(colour = "Model")
+  plot(g)
+  dev.off()
+  
+  ## Plots for Partisan Sep.
+  JST_coh <- data.frame(topic_n=kk,mean_npmi_cosim = result_co[5,], model="JST")
+  STM_coh <- data.frame(topic_n=kk,mean_npmi_cosim = result_stm[5,],model="STM")
+
+  coherence_plot <- rbind(JST_coh,STM_coh)  
+  pdf("Figures/House-Clust-Sep_coherence.pdf")
+  
+  g <- ggplot(data=coherence_plot,aes(x=topic_n,y=mean_npmi_cosim,colour=as.factor(model)))+
+    geom_line()+xlab("Number of Topics") +ylab("Mean NPMI Cosine Similarity") + 
+    labs(colour = "Model")
+  plot(g)
+  dev.off()
+  
+  ## Check correlations between STM/JST
+  
+  
+  
+  clust_stats_compare <- list()
+  filter_n = 0
+  for (k in k_index){
+    
+    ## JST PCA
+    
+    # extract parameters 
+    theta <- get_parameter(results[[k]],"theta")
+    phi   <- get_parameter(results[[k]],"phi")
+    pi    <- get_parameter(results[[k]],"pi")
+    
+    
+
+    
+    #  concatenate sentiment and topic probabilities into one dataframe
+    theta$sent1 <- pi$sent1
+    theta$sent2 <- pi$sent2
+    if(n_senti>2){
+      theta$sent3 <- pi$sent3
+    }
+    
+    theta<-theta %>% filter(!(handle %in%
+                                c( "@drnealdunnfl2", 
+                                   "@repjenniffer", 
+                                   "@sencortezmasto", 
+                                   "@reproybalallard", 
+                                   "@repchriscollins") ))
+    
+    
+    cutoff<- kk[k]
+    theta_est<-theta
+    theta_est[,9:(9+cutoff)] <- theta[,9:(8+cutoff)]*theta$sent1
+    theta_est[,(9+cutoff):(8+2*cutoff)] <- theta[,(9+cutoff):(8+2*cutoff)]*theta$sent2
+    theta_est[,(9+2*cutoff):(8+3*cutoff)] <- theta[,(9+2*cutoff):(8+3*cutoff)]*theta$sent2
+    
+    if(n_senti==3){
+      PCA_vecs_agg    <- theta_est%>% 
+        group_by(party,handle)%>% 
+        mutate(n_tweets = n()) %>%
+        ungroup() %>%dplyr::select(party,handle,topic1sent1:sent3) %>% 
+        group_by(party,handle)%>%
+        summarise_all(list(mean))
+    }
+    
+
+    
+    
+    PCA_vecs_agg$n_tweets <- NULL 
+    
+    #compute hellinger distance 
+    
+    
+    if(n_senti==3){
+      pca_mat <- as.matrix(PCA_vecs_agg%>%ungroup %>%dplyr::select(topic1sent1:sent3))
+      pca_mat <- (pca_mat[,1:(ncol(pca_mat)-n_senti)])
+    }
+    
+    
+    fit6  <-prcomp(pca_mat) 
+    
+    df.clust_jst <- fit6$x[(fit6$x[,2])<(mean(fit6$x[,2]))+(2.5*sd(fit6$x[,2])) &
+                             (fit6$x[,2])>(mean(fit6$x[,2]))-(2.5*sd(fit6$x[,2])) &
+                             (fit6$x[,1])<(mean(fit6$x[,1]))+(2.5*sd(fit6$x[,1])) &
+                             (fit6$x[,1])>(mean(fit6$x[,1]))-(2.5*sd(fit6$x[,1])) 
+                           ,c(1,2)]
+    km.res.jst <- eclust(df.clust_jst , "kmeans", k = 2, nstart = 25, graph = FALSE)
+    
+    ## STM PCA
+    theta_stm        <- as.data.frame(cbind(as.matrix(model_stm[[k]]$settings$covariates$X),model_stm[[k]]$theta))
+    theta_stm$handle <- houseDfmSTM$meta$handle
+    
+    theta_stm<-theta_stm %>% filter(!(handle %in%
+                                c( "@drnealdunnfl2", 
+                                   "@repjenniffer", 
+                                   "@sencortezmasto", 
+                                   "@reproybalallard", 
+                                   "@repchriscollins") ))
+    
+    
+    
+    
+    PCA_vecs_agg    <- as.data.frame(theta_stm)%>% 
+      group_by(`factor(party)r`, handle)%>% 
+      mutate(n_tweets = n()) %>%
+      filter(n_tweets>filter_n[ff]) %>% 
+      ungroup() %>% 
+      group_by(`factor(party)r`,handle)%>%
+      summarise_all(list(mean))
+    
+    fit_stm<-prcomp(as.matrix(PCA_vecs_agg%>%ungroup()%>%dplyr::select(starts_with("V")))) 
+    
+    ###
+    
+    
+    ## use JST since it has some large outliers-- exclude them here for apples-to-apples comparison
+    df.clust_stm <- fit_stm$x[(fit6$x[,2])<(mean(fit6$x[,2]))+(2.5*sd(fit6$x[,2])) &
+                                (fit6$x[,2])>(mean(fit6$x[,2]))-(2.5*sd(fit6$x[,2])) &
+                                (fit6$x[,1])<(mean(fit6$x[,1]))+(2.5*sd(fit6$x[,1])) &
+                                (fit6$x[,1])>(mean(fit6$x[,1]))-(2.5*sd(fit6$x[,1])) 
+                              ,c(1,2)]
+    km.res.stm <- eclust(df.clust_stm , "kmeans", k = 2, nstart = 25, graph = FALSE)
+    
+    clust_stats_compare[[k]] <- data.frame(vi=cluster.stats(d = dist(df.clust_stm ), 
+                                                            alt.clustering=km.res.jst$cluster, clustering=km.res.stm$cluster)$vi,
+                                           rand=cluster.stats(d = dist(df.clust_stm), alt.clustering=km.res.jst$cluster,clustering= km.res.stm$cluster)$corrected.rand,
+                                           topic_n=k,
+                                           model="STM",
+                                           corr_dim1 = cor( df.clust_stm[,2],df.clust_jst[,1]),
+                                           corr_dim2 = cor( df.clust_stm[,2],df.clust_jst[,2])) 
+    
+  }
+  
+  ## Plots for PCA correlation
+  
+  
+  clust_cor_plot <- data.table::rbindlist( clust_stats_compare) 
+  clust_cor_plot$topic_n <- kk
+  pdf("Figures/House-Clust-Sep_correlation.pdf")
+  
+  g <- ggplot(data=clust_cor_plot,aes(x=topic_n,y=rand))+
+    geom_line()+xlab("Number of Topics") +ylab("Rand Index Similarity Between JST and STM") 
+  plot(g)
+  dev.off()
+  
+  
+  pdf("Figures/House-Clust-Sep_correlation_dim1.pdf")
+  
+  g <- ggplot(data=clust_cor_plot,aes(x=topic_n,y=abs(corr_dim1)))+
+    geom_line()+xlab("Number of Topics") +ylab("Correlation Between JST and STM PCA Component 1") 
+  plot(g)
+  dev.off()
+  
+  
+  pdf("Figures/House-Clust-Sep_correlation_dim2.pdf")
+  
+  g <- ggplot(data=clust_cor_plot,aes(x=topic_n,y=abs(corr_dim2)))+
+    geom_line()+xlab("Number of Topics") +ylab("Correlation Between JST and STM PCA Component 2") 
+  plot(g)
+  dev.off()
+  
+  
+  ### Randomize labels
+  
+  houseDfmSTM$meta$party_rand <- sample(c("r","d"),size=nrow( houseDfmSTM$meta),replace = T,prob = c(0.5,0.5))
+  
+    
+    
+  model_stm <- mclapply(kk,
+                        FUN = function(kk) 
+                          stm(houseDfmSTM$documents, 
+                              houseDfmSTM$vocab,
+                              K = kk,
+                              prevalence=~factor(party_rand)  + factor(state) + as_date(date),
+                              max.em.its = 200,
+                              data = houseDfmSTM$meta, 
+                              init.type = "Spectral",
+                              seed = 153332),
+                        mc.cores = getOption("mc.cores", 
+                                             5L)) 
+  
+  save(model_stm,file="modelOutput-House-STM-rand.RData")
+  
