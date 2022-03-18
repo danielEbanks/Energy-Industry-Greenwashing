@@ -31,8 +31,11 @@ source("IRF_flexible_shock.R")
 
 
 # Collect Tweet Data
+
 source("collect_tweets.R")
+
 #load stock data
+
 source("load_stock_data.R")
 
 # Preoprocess the data
@@ -44,6 +47,7 @@ source("preprocess_text.R")
 source("JSTanalysis.R")
 
 # PCA+IRF analysis
+
 source("PCA+IRF.R")
 
 # Create SM Tables
